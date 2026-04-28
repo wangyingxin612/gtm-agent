@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-04-01T00:00:00Z",
+  "update_reason": "Initial default weights — manually calibrated, pre-data",
+
+  "_comment_weights": "Normal mode weights. Used when existing_customers >= 1. Must conceptually sum to 100 (each is a max-point allocation, not a percentage).",
+  "weights": {
+    "firmographic": 30,
+    "keyword_relevance": 25,
+    "growth_signals": 20,
+    "timing_indicators": 15,
+    "lookalike_similarity": 10
+  },
+
+  "_comment_cold_start": "Used when existing_customers == 0. Lookalike weight redistributed across other components. cold_start_floor is a fixed bonus replacing the lookalike score.",
+  "cold_start_weights": {
+    "firmographic": 38,
+    "keyword_relevance": 30,
+    "growth_signals": 20,
+    "timing_indicators": 17,
+    "lookalike_similarity": 0,
+    "cold_start_floor": 5
+  },
+
+  "_comment_modifiers": "Additive adjustments applied after weighted sum. Hard cap at 100 applies after all modifiers.",
+  "modifiers": {
+    "founder_led_bonus": 5,
+    "small_team_bonus": 3,
+    "enterprise_penalty": -5,
+    "explicit_enterprise_penalty": -8,
+    "recent_rejection_penalty": -100,
+    "revisit_boost": 10,
+    "revisit_decay_half_life_days": 30
+  },
+
+  "_comment_tiers": "Score thresholds for tier assignment. Tune if Tier 1 is consistently > 40% or < 10% of results.",
+  "tiers": {
+    "tier_1_min": 70,
+    "tier_2_min": 45,
+    "tier_3_min": 20
+  },
+
+  "_comment_discovery": "Controls how many candidates to fetch from Hunter before scoring.",
+  "discovery": {
+    "candidate_pool_size": 100,
+    "min_results_before_nl_fallback": 10,
+    "max_results_per_session": 100
+  },
+
+  "_comment_contact": "Controls ContactDiscoveryAgent behavior.",
+  "contact": {
+    "max_contacts_per_company": 3,
+    "max_contacts_searched_per_company": 10,
+    "min_email_confidence": 70,
+    "search_tiers": ["Tier 1", "Tier 2"],
+    "target_seniorities": ["c_suite", "vp", "director"],
+    "target_departments": ["management", "operations", "legal", "it"]
+  },
+
+  "_comment_llm": "LLM model assignments per task type.",
+  "llm": {
+    "icp_interpretation_model": "claude-sonnet-4-6",
+    "reasoning_summary_model": "claude-haiku-4-5",
+    "conflict_detection_model": "claude-haiku-4-5",
+    "website_analysis_model": "claude-sonnet-4-6",
+    "reasoning_max_tokens": 150,
+    "reasoning_temperature": 0.3,
+    "icp_max_tokens": 800,
+    "icp_temperature": 0.2
+  },
+
+  "_comment_cache": "TTL values in seconds for SQLite cache.",
+  "cache": {
+    "hunter_discover_ttl_seconds": 86400,
+    "company_enrichment_ttl_seconds": 604800,
+    "contact_data_ttl_seconds": 259200,
+    "llm_reasoning_ttl_seconds": 604800
+  },
+
+  "_comment_learning": "Controls the learning pipeline trigger.",
+  "learning": {
+    "phase2_training_threshold": 80,
+    "phase2_min_positive_labels": 20,
+    "phase2_min_negative_labels": 15
+  }
+}

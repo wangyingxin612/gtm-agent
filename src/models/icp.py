@@ -29,7 +29,6 @@ class ICPDefinition(BaseModel):
 
     # Deal Probability Factors
     prefer_short_decision_chain: bool = True
-    prefer_not_enterprise: bool = True
 
     # Metadata
     interpretation_confidence: float

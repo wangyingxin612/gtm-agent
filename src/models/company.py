@@ -105,8 +105,9 @@ class RankedCompany(BaseModel):
 
     # Scoring
     total_score: float
-    tier: Literal["Tier 1", "Tier 2", "Tier 3"]
+    tier: Literal["Tier 1", "Tier 2", "Tier 3", "excluded"]
     score_breakdown: ScoreBreakdown
+    scoring_basis: Literal["full", "cold_start"] = "full"
 
     # Explanation
     reasoning_summary: str

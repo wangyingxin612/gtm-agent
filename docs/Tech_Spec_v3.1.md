@@ -321,7 +321,7 @@ class ICPDefinition(BaseModel):
 
     # Deal Probability Factors
     prefer_short_decision_chain: bool = True  # Prefer companies <500 where founder/exec still decides
-    prefer_not_enterprise: bool = True        # Avoid 1000+ employee companies for MVP
+    # Enterprise penalty applied automatically when employee_count > company_size_max * 1.5
 
     # Metadata
     interpretation_confidence: float    # 0.0 - 1.0
@@ -454,9 +454,9 @@ Mode B is cheaper (fewer API calls) and more deterministic, but depends on the q
 
 #### 6.4.2 ICP → Hunter Discover API Parameter Mapping
 
-**Primary Endpoint:** `GET https://api.hunter.io/v2/discover`  
+**Primary Endpoint:** `POST https://api.hunter.io/v2/discover` (JSON body; `api_key` as query param)  
 **Cost:** Free (no credits consumed)  
-**Max results per call:** 100 companies (pagination requires premium)
+**Max results per call:** 100 companies (pagination requires premium; do NOT pass `limit` in body — Free plan returns 400)
 
 | ICP Field | Hunter Parameter | Transformation |
 |---|---|---|
@@ -489,20 +489,12 @@ Hunter's AI assistant will interpret this and apply filters automatically.
   },
   "headcount": ["51-200", "201-500", "501-1000"],
   "headquarters_location": {
-    "include": [
-      {"country": "US"},
-      {"country": "AU"},
-      {"country": "GB"}
-    ]
+    "country": ["US", "AU", "GB"]
   },
   "keywords": {
     "include": ["compliance", "operations", "process", "documentation"],
     "match": "any"
-  },
-  "company_type": {
-    "include": ["privately held", "public company"]
-  },
-  "limit": 100
+  }
 }
 ```
 
@@ -552,54 +544,54 @@ def map_size_to_buckets(size_min: int, size_max: int) -> list[str]:
 
 #### 6.4.6 Data Returned by Hunter Discover
 
-Each company in the Discover response includes:
+The real Hunter Discover response is **very sparse** — only three fields per company:
 
 ```json
 {
   "domain": "example.com",
-  "name": "Example Corp",
-  "headcount": "201-500",
-  "industry": "Financial Services",
-  "country": "US",
-  "city": "New York",
-  "description": "Short company description",
-  "linkedin_handle": "company/example-corp",
-  "founded_year": 2012,
-  "tags": ["fintech", "compliance", "SaaS"]
+  "organization": "Example Corp",
+  "emails_count": 42
 }
 ```
 
+> Note: the company name field is `organization` (not `name`). All other fields (`industry`, `country`, `headcount`, `description`, etc.) are absent and must be obtained via Company Enrichment.
+
 **What Hunter Discover does NOT return (must enrich separately):**
+- Industry, country, city, description, founded year
+- Headcount bucket
 - Tech stack
 - Funding details (series, amount, date)
-- Employee count (exact number; only bucket)
 - Revenue estimates
-- Recent news / signals
 
 #### 6.4.7 Company Enrichment for Scoring
 
 After the candidate pool is fetched, enrich each company via Hunter Company Enrichment:
 
-**Endpoint:** `GET https://api.hunter.io/v2/companies/enrich?domain={domain}`  
+**Endpoint:** `GET https://api.hunter.io/v2/companies/find?domain={domain}`  
 **Cost:** 0.2 credits per company (charged only if data found)
 
-Additional fields returned by enrichment:
+Additional fields returned by enrichment (real API field paths):
 
 ```json
 {
-  "phone_numbers": [...],
-  "email_addresses": [...],
-  "tech_stack": ["Salesforce", "Workday", "ServiceNow"],
+  "name": "Example Corp",
+  "category": { "industry": "Financial Services" },
+  "geo": { "countryCode": "US", "city": "New York" },
+  "foundedYear": 2012,
+  "description": "Short company description",
+  "linkedin": { "handle": "company/example-corp" },
+  "tech": ["Salesforce", "Workday", "ServiceNow"],
+  "metrics": { "employees": "201-500" },
   "funding": {
     "series": "Series B",
     "amount": 25000000,
     "date": "2023-06-15"
   },
-  "revenue": "$10M-$50M",
-  "employee_count": 320,
-  "social_media": {...}
+  "revenue": "$10M-$50M"
 }
 ```
+
+> Note: `metrics.employees` is a **string bucket** (e.g., `"201-500"`), not an integer. Map to midpoint using `BUCKET_MIDPOINTS`. The `tech` field holds the tech stack (not `tech_stack`). `funding` may be absent on Free plan.
 
 > **Cost estimate:** 100 companies × 0.2 credits = 20 credits per session. On Hunter Starter ($34/month), this is negligible.
 

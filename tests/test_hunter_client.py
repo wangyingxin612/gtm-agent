@@ -95,7 +95,7 @@ class TestDiscoverCompanies:
         companies = [SAMPLE_COMPANY, {**SAMPLE_COMPANY, "domain": "beta.com", "name": "Beta"},
                      {**SAMPLE_COMPANY, "domain": "gamma.com", "name": "Gamma"}]
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_discover_resp(companies))
+        mock_client.post = AsyncMock(return_value=_discover_resp(companies))
 
         result = await hunter.discover_companies(_make_icp(), client=mock_client)
 
@@ -104,14 +104,14 @@ class TestDiscoverCompanies:
 
     async def test_empty_response_returns_empty_list(self, hunter):
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_discover_resp([]))
+        mock_client.post = AsyncMock(return_value=_discover_resp([]))
 
         result = await hunter.discover_companies(_make_icp(), client=mock_client)
         assert result == []
 
     async def test_headcount_bucket_maps_to_midpoint_and_range(self, hunter):
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_discover_resp([SAMPLE_COMPANY]))
+        mock_client.post = AsyncMock(return_value=_discover_resp([SAMPLE_COMPANY]))
 
         result = await hunter.discover_companies(_make_icp(), client=mock_client)
 
@@ -120,7 +120,7 @@ class TestDiscoverCompanies:
 
     async def test_correct_field_mapping(self, hunter):
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_discover_resp([SAMPLE_COMPANY]))
+        mock_client.post = AsyncMock(return_value=_discover_resp([SAMPLE_COMPANY]))
 
         r = (await hunter.discover_companies(_make_icp(), client=mock_client))[0]
 
@@ -136,7 +136,7 @@ class TestDiscoverCompanies:
         minimal = {"domain": "min.com", "name": "Min Corp", "headcount": "11-50",
                    "industry": "Finance", "country": "US"}
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_discover_resp([minimal]))
+        mock_client.post = AsyncMock(return_value=_discover_resp([minimal]))
 
         result = await hunter.discover_companies(_make_icp(), client=mock_client)
 
@@ -149,7 +149,7 @@ class TestDiscoverCompanies:
 
     async def test_agent_contributions_hunter_key_set(self, hunter):
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_discover_resp([SAMPLE_COMPANY]))
+        mock_client.post = AsyncMock(return_value=_discover_resp([SAMPLE_COMPANY]))
 
         result = await hunter.discover_companies(_make_icp(), client=mock_client)
 
@@ -264,7 +264,7 @@ class TestRetryBehavior:
         mock_client = MagicMock()
         resp_429 = _mock_response(429, {})
         resp_200 = _discover_resp([SAMPLE_COMPANY])
-        mock_client.get = AsyncMock(side_effect=[resp_429, resp_200])
+        mock_client.post = AsyncMock(side_effect=[resp_429, resp_200])
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await hunter.discover_companies(_make_icp(), client=mock_client)
@@ -274,7 +274,7 @@ class TestRetryBehavior:
 
     async def test_raises_after_all_retries_exhausted(self, hunter):
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=_mock_response(429, {}))
+        mock_client.post = AsyncMock(return_value=_mock_response(429, {}))
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(Exception, match="[Rr]ate limit|429"):

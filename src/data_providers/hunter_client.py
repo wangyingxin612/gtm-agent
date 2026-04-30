@@ -1,10 +1,12 @@
 """
 HunterClient — thin async wrapper around the Hunter.io API.
 
-Endpoints used:
-  GET /v2/discover           → candidate company list (free, no credits)
-  GET /v2/companies/enrich   → tech stack, funding, revenue (0.2 credits each)
-  GET /v2/domain-search      → contacts at a domain (1 credit / 10 emails)
+Endpoints used (verified against real API 2026-04):
+  POST /v2/discover          → candidate company list (free, no credits)
+                               Returns: {domain, organization, emails_count}
+  GET  /v2/companies/find    → enrich one domain (0.2 credits each)
+                               Returns: {name, category, geo, metrics, tech, ...}
+  GET  /v2/domain-search     → contacts at a domain (1 credit / 10 emails)
 
 All methods accept an optional `client: httpx.AsyncClient` for testability.
 If not supplied, a fresh client is created and closed within the method.
@@ -77,10 +79,14 @@ class HunterClient:
         limit: int = 100,
         client: Optional[httpx.AsyncClient] = None,
     ) -> List[CompanyProfile]:
-        """Fetch candidate companies matching the ICP from Hunter Discover."""
-        params = self._build_discover_params(icp, limit)
-        response = await self._get_with_retry(
-            f"{BASE_URL}/discover", params, client or httpx.AsyncClient()
+        """POST /v2/discover — returns companies matching the ICP.
+
+        Real Hunter response per company: {domain, organization, emails_count}.
+        Call enrich_company() to fill tech_stack, funding, industry, etc.
+        """
+        body = self._build_discover_body(icp)
+        response = await self._post_with_retry(
+            f"{BASE_URL}/discover", body, client or httpx.AsyncClient()
         )
         companies = response.json().get("data", [])
         return [self._company_from_discover(c) for c in companies]
@@ -90,10 +96,10 @@ class HunterClient:
         domain: str,
         client: Optional[httpx.AsyncClient] = None,
     ) -> Optional[CompanyProfile]:
-        """Fetch enrichment data (tech stack, funding, revenue) for a domain."""
+        """GET /v2/companies/find — enrich a domain with full company details."""
         params = {"domain": domain, "api_key": self.api_key}
         response = await self._get_with_retry(
-            f"{BASE_URL}/companies/enrich", params, client or httpx.AsyncClient()
+            f"{BASE_URL}/companies/find", params, client or httpx.AsyncClient()
         )
         if response.status_code == 404:
             return None
@@ -106,7 +112,7 @@ class HunterClient:
         config: dict,
         client: Optional[httpx.AsyncClient] = None,
     ) -> List[Contact]:
-        """Find contacts at a domain, filtered to confidence ≥ 70."""
+        """GET /v2/domain-search — contacts at a domain, filtered to confidence ≥ 70."""
         seniorities = ",".join(config.get("target_seniorities", []))
         departments = ",".join(config.get("target_departments", []))
         params: dict = {
@@ -130,7 +136,7 @@ class HunterClient:
         ]
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal — HTTP with retry
     # ------------------------------------------------------------------
 
     async def _get_with_retry(
@@ -150,27 +156,68 @@ class HunterClient:
             f"Hunter API rate limit (429) exceeded after {max_retries} retries on {url}"
         )
 
-    def _build_discover_params(self, icp: ICPDefinition, limit: int) -> dict:
+    async def _post_with_retry(
+        self,
+        url: str,
+        body: dict,
+        client: httpx.AsyncClient,
+        max_retries: int = 3,
+    ) -> httpx.Response:
+        for attempt in range(max_retries + 1):
+            response = await client.post(
+                url, params={"api_key": self.api_key}, json=body
+            )
+            if response.status_code != 429:
+                return response
+            if attempt < max_retries:
+                await asyncio.sleep(2 ** attempt)
+        raise RuntimeError(
+            f"Hunter API rate limit (429) exceeded after {max_retries} retries on {url}"
+        )
+
+    # ------------------------------------------------------------------
+    # Internal — request building
+    # ------------------------------------------------------------------
+
+    def _build_discover_body(self, icp: ICPDefinition) -> dict:
+        """Build JSON body for POST /v2/discover.
+
+        Omits limit — on Hunter Free plan any explicit limit causes a 400.
+        The API default (100) is used instead; callers slice client-side if needed.
+        """
         keywords = list(icp.keywords or []) + list(icp.pain_points or [])
         buckets = _map_size_to_buckets(icp.company_size_min, icp.company_size_max)
-        return {
-            "api_key": self.api_key,
-            "limit": limit,
-            "industry": icp.industries,
+        body: dict = {
+            "industry": {"include": icp.industries},
             "headcount": buckets,
-            "headquarters_location": icp.locations,
-            "keywords": keywords or None,
+            "headquarters_location": {"country": icp.locations},
         }
+        if keywords:
+            body["keywords"] = {"include": keywords, "match": "any"}
+        return body
+
+    # ------------------------------------------------------------------
+    # Internal — response mapping
+    # ------------------------------------------------------------------
 
     def _company_from_discover(self, data: dict) -> CompanyProfile:
+        """Map a /v2/discover company object to CompanyProfile.
+
+        Real Hunter response has only: domain, organization, emails_count.
+        Mock-test data may include additional fields (industry, country, etc.)
+        which are read here for test coverage; they'll be None in production
+        until enrich_company() is called.
+        """
         domain = data["domain"]
+        # Real API: "organization"; mock fallback: "name"
+        name = data.get("organization") or data.get("name", domain)
         bucket = data.get("headcount")
         emp_count = BUCKET_MIDPOINTS.get(bucket) if bucket else None
 
         now = datetime.utcnow()
         return CompanyProfile(
             id=_domain_id(domain),
-            name=data["name"],
+            name=name,
             domain=domain,
             industry=data.get("industry"),
             employee_count=emp_count,
@@ -199,6 +246,21 @@ class HunterClient:
         )
 
     def _company_from_enrich(self, domain: str, data: dict) -> CompanyProfile:
+        """Map a /v2/companies/find response to CompanyProfile.
+
+        Real API field paths          → Mock fallback field names
+        data["tech"]                  → data["tech_stack"]
+        data["category"]["industry"]  → data["industry"]
+        data["geo"]["countryCode"]    → data["country"]
+        data["geo"]["city"]           → data["city"]
+        data["foundedYear"]           → data["founded_year"]
+        data["linkedin"]["handle"]    → data["linkedin_handle"]
+        data["metrics"]["employees"]  → data["employee_count"] (int)
+        """
+        # Tech stack
+        tech_stack = data.get("tech") or data.get("tech_stack")
+
+        # Funding — may be None on free plan
         funding = data.get("funding") or {}
         funding_date: Optional[date] = None
         raw_date = funding.get("date")
@@ -208,17 +270,53 @@ class HunterClient:
             except ValueError:
                 pass
 
+        # Employee count: mock sends int; real API sends metrics.employees string
+        employee_count = data.get("employee_count")
+        employee_range: Optional[str] = None
+        if employee_count is None:
+            emp_str = (data.get("metrics") or {}).get("employees")
+            if emp_str:
+                employee_range = emp_str
+                employee_count = BUCKET_MIDPOINTS.get(emp_str)
+
+        # Industry
+        category = data.get("category") or {}
+        industry = category.get("industry") or data.get("industry")
+
+        # Location
+        geo = data.get("geo") or {}
+        hq_country = geo.get("countryCode") or data.get("country")
+        hq_location = geo.get("city") or data.get("city")
+
+        # Founded year (camelCase in real API)
+        founded_year = data.get("foundedYear") or data.get("founded_year")
+
+        # LinkedIn
+        linkedin_obj = data.get("linkedin") or {}
+        linkedin_url = (
+            linkedin_obj.get("handle")
+            or data.get("linkedin_url")
+            or data.get("linkedin_handle")
+        )
+
         now = datetime.utcnow()
         return CompanyProfile(
             id=_domain_id(domain),
             name=data.get("name", domain),
             domain=domain,
-            tech_stack=data.get("tech_stack"),
+            industry=industry,
+            hq_country=hq_country,
+            hq_location=hq_location,
+            founded_year=founded_year,
+            description=data.get("description"),
+            linkedin_url=linkedin_url,
+            tech_stack=tech_stack,
             funding_series=funding.get("series"),
             funding_amount=funding.get("amount"),
             funding_date=funding_date,
-            revenue_range=data.get("revenue"),
-            employee_count=data.get("employee_count"),
+            revenue_range=data.get("revenue") or data.get("revenue_range"),
+            employee_count=employee_count,
+            employee_range=employee_range,
             data_source="hunter",
             data_quality="full",
             last_enriched=now,
@@ -230,6 +328,7 @@ class HunterClient:
                     signals_added=[
                         "tech_stack", "funding_series", "funding_amount",
                         "funding_date", "revenue_range", "employee_count",
+                        "industry", "hq_country", "hq_location", "founded_year",
                     ],
                     confidence=0.9,
                     timestamp=now,

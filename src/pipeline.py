@@ -21,7 +21,8 @@ from typing import Any, Dict, List, Optional
 from src.agents.company_discoverer import CompanyDiscoverer
 from src.agents.contact_discovery import ContactDiscoveryAgent
 from src.agents.icp_interpreter import ICPInterpreter
-from src.agents.scoring_engine import ScoringEngine, load_scoring_config
+from src.agents.scoring_engine import ScoringEngine
+from src.config import load_scoring_config
 from src.data_providers.hunter_client import HunterClient
 from src.models.session import ResearchSession
 
@@ -92,12 +93,13 @@ class Pipeline:
         session.status = "ranking"
         customer_profiles = []  # Phase 2: populate from existing_customers
         ranked = self.scoring_engine.score(candidates, icp, customer_profiles)
+        ranked = ranked[:list_size]
         session.ranked_companies = ranked
 
-        # Step 4 — Persist signal snapshots
+        # Step 4 — Persist signal snapshots (non-negotiable invariant)
         if self.db:
             for rc in ranked:
-                self.db.save_signal_snapshot(rc)
+                self.db.save_signal_snapshot(session.id, rc, icp)
 
         # Step 5 — Contact discovery
         session.status = "contact_discovery"
@@ -125,7 +127,7 @@ def export_to_csv(session: ResearchSession, output_path: str) -> str:
                 "domain": c.domain,
                 "industry": c.industry or "",
                 "employee_range": c.employee_range or "",
-                "location": c.hq_country or "",
+                "location": ", ".join(filter(None, [c.hq_location, c.hq_country])) or "",
                 "tier": rc.tier,
                 "score": rc.total_score,
                 "why_now": rc.reasoning_summary,
@@ -157,14 +159,21 @@ async def run_pipeline(
 ) -> ResearchSession:
     """Convenience entry point: builds agents from env vars and runs the pipeline."""
     import os
+    from pathlib import Path
     from dotenv import load_dotenv
-    load_dotenv(dotenv_path=".env")
+    from src.storage.database import SignalStore, get_connection, init_db
+
+    # Load .env relative to this file — works regardless of caller's CWD
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
     anthropic_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
     hunter_key = hunter_api_key or os.getenv("HUNTER_API_KEY", "")
 
     config = load_scoring_config()
     hunter = HunterClient(api_key=hunter_key)
+
+    conn = get_connection()
+    init_db(conn)
 
     pipeline = Pipeline(
         icp_interpreter=ICPInterpreter(api_key=anthropic_key),
@@ -174,7 +183,7 @@ async def run_pipeline(
             hunter_client=hunter,
             config=config.get("contact", {}),
         ),
-        db=None,
+        db=SignalStore(conn),
     )
     return await pipeline.run(
         company_website=company_website,

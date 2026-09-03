@@ -182,6 +182,18 @@ class TestEnrichCompany:
         result = await hunter.enrich_company("notfound.com", client=mock_client)
         assert result is None
 
+    async def test_non_404_error_raises_not_returns_garbage(self, hunter):
+        import httpx
+        resp = _mock_response(401, {"errors": [{"details": "Invalid API key"}]})
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "401 Unauthorized", request=MagicMock(), response=MagicMock()
+        )
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await hunter.enrich_company("acme.com", client=mock_client)
+
     async def test_missing_funding_does_not_crash(self, hunter):
         mock_client = MagicMock()
         mock_client.get = AsyncMock(return_value=_enrich_resp({

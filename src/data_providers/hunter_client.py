@@ -85,9 +85,11 @@ class HunterClient:
         Call enrich_company() to fill tech_stack, funding, industry, etc.
         """
         body = self._build_discover_body(icp)
-        response = await self._post_with_retry(
-            f"{BASE_URL}/discover", body, client or httpx.AsyncClient()
-        )
+        if client is not None:
+            response = await self._post_with_retry(f"{BASE_URL}/discover", body, client)
+        else:
+            async with httpx.AsyncClient() as _client:
+                response = await self._post_with_retry(f"{BASE_URL}/discover", body, _client)
         companies = response.json().get("data", [])
         return [self._company_from_discover(c) for c in companies]
 
@@ -96,13 +98,22 @@ class HunterClient:
         domain: str,
         client: Optional[httpx.AsyncClient] = None,
     ) -> Optional[CompanyProfile]:
-        """GET /v2/companies/find — enrich a domain with full company details."""
+        """GET /v2/companies/find — enrich a domain with full company details.
+
+        Returns None for 404 (domain not found).
+        Raises httpx.HTTPStatusError for 4xx/5xx errors other than 404.
+        """
         params = {"domain": domain, "api_key": self.api_key}
-        response = await self._get_with_retry(
-            f"{BASE_URL}/companies/find", params, client or httpx.AsyncClient()
-        )
+        if client is not None:
+            response = await self._get_with_retry(f"{BASE_URL}/companies/find", params, client)
+        else:
+            async with httpx.AsyncClient() as _client:
+                response = await self._get_with_retry(
+                    f"{BASE_URL}/companies/find", params, _client
+                )
         if response.status_code == 404:
             return None
+        response.raise_for_status()
         data = response.json().get("data", {})
         return self._company_from_enrich(domain, data)
 
@@ -125,9 +136,13 @@ class HunterClient:
         if departments:
             params["department"] = departments
 
-        response = await self._get_with_retry(
-            f"{BASE_URL}/domain-search", params, client or httpx.AsyncClient()
-        )
+        if client is not None:
+            response = await self._get_with_retry(f"{BASE_URL}/domain-search", params, client)
+        else:
+            async with httpx.AsyncClient() as _client:
+                response = await self._get_with_retry(
+                    f"{BASE_URL}/domain-search", params, _client
+                )
         emails = response.json().get("data", {}).get("emails", [])
         return [
             self._contact_from_email(e)

@@ -13,11 +13,14 @@ icp.exclude_companies is applied as a post-process filter (Hunter doesn't suppor
 """
 
 import asyncio
+import logging
 from typing import List, Optional
 
 from src.data_providers.hunter_client import HunterClient
 from src.models.company import CompanyProfile
 from src.models.icp import ICPDefinition
+
+logger = logging.getLogger(__name__)
 
 
 class CompanyDiscoverer:
@@ -47,22 +50,33 @@ class CompanyDiscoverer:
         return list(enriched)
 
     async def enrich_domains(self, domains: List[str]) -> List[CompanyProfile]:
-        """Mode B: user-supplied domains → enrich → list (404s excluded)."""
+        """Mode B: user-supplied domains → enrich → list (failures excluded)."""
         if not domains:
             return []
 
         results = await asyncio.gather(
-            *[self.hunter_client.enrich_company(d) for d in domains]
+            *[self.hunter_client.enrich_company(d) for d in domains],
+            return_exceptions=True,
         )
-        return [r for r in results if r is not None]
+        profiles = []
+        for domain, result in zip(domains, results):
+            if isinstance(result, Exception):
+                logger.warning("enrich failed for %s: %s", domain, result)
+            elif result is not None:
+                profiles.append(result)
+        return profiles
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     async def _enrich_or_keep(self, partial: CompanyProfile) -> CompanyProfile:
-        """Enrich a domain; if 404, return the partial profile unchanged."""
-        full = await self.hunter_client.enrich_company(partial.domain)
+        """Enrich a domain; on 404 or any error, return the partial profile."""
+        try:
+            full = await self.hunter_client.enrich_company(partial.domain)
+        except Exception as exc:
+            logger.warning("enrich failed for %s: %s — keeping partial profile", partial.domain, exc)
+            return partial
         if full is None:
             return partial
         # Merge: carry discover contribution forward onto the enriched profile

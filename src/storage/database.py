@@ -11,9 +11,11 @@ Invariants this module enforces:
     Use `with conn:` to make a group of writes atomic.
 """
 
+import hashlib
 import json
 import os
 import sqlite3
+import uuid
 from datetime import datetime
 from typing import Any, Dict
 
@@ -144,6 +146,44 @@ def record_outcome(conn: sqlite3.Connection, override: OverrideEvent) -> None:
         raise ValueError(
             f"No snapshot found for session={override.session_id!r} company={override.company_id!r}"
         )
+
+
+class SignalStore:
+    """Object wrapper around the DB layer for pipeline injection.
+
+    Provides save_signal_snapshot(session_id, rc, icp) so the pipeline
+    never writes raw SQL — and so tests can inject an in-memory instance.
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def save_signal_snapshot(self, session_id: str, rc: Any, icp: Any = None) -> None:
+        from src.models.company import RankedCompany  # local import avoids circular dep
+        icp_hash = (
+            hashlib.md5(icp.model_dump_json().encode()).hexdigest()
+            if icp is not None
+            else ""
+        )
+        bd = rc.score_breakdown
+        snapshot: Dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "company_id": rc.company.id,
+            "company_domain": rc.company.domain,
+            "icp_hash": icp_hash,
+            "signals": {},
+            "firmographic_score": bd.firmographic_score,
+            "keyword_score": bd.keyword_score,
+            "growth_score": bd.growth_score,
+            "timing_score": bd.timing_score,
+            "lookalike_score": bd.lookalike_score,
+            "total_score": rc.total_score,
+            "tier_assigned": rc.tier,
+            "scored_at": datetime.utcnow(),
+        }
+        with self.conn:
+            write_signal_snapshot(self.conn, snapshot)
 
 
 def write_override_event(conn: sqlite3.Connection, override: Dict[str, Any]) -> None:

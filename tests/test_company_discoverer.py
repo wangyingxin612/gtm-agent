@@ -260,3 +260,60 @@ class TestRankOnlyModeB:
 
         assert result == []
         mock_hunter.enrich_company.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Exception isolation (B2 bug fixes)
+# ---------------------------------------------------------------------------
+
+class TestExceptionIsolation:
+    async def test_enrich_exception_in_discover_keeps_partial(self, discoverer, mock_hunter):
+        """One enrich failure must not abort the whole discover phase."""
+        mock_hunter.discover_companies.return_value = [
+            _partial_profile("ok.com"),
+            _partial_profile("fail.com"),
+        ]
+        mock_hunter.enrich_company.side_effect = [
+            _full_profile("ok.com"),
+            RuntimeError("network timeout"),
+        ]
+
+        result = await discoverer.discover(icp=_make_icp())
+
+        assert len(result) == 2
+        domains = {c.domain for c in result}
+        assert "ok.com" in domains
+        assert "fail.com" in domains  # kept as partial, not dropped
+
+    async def test_enrich_exception_in_discover_returns_partial_profile(self, discoverer, mock_hunter):
+        mock_hunter.discover_companies.return_value = [_partial_profile("fail.com")]
+        mock_hunter.enrich_company.side_effect = RuntimeError("API down")
+
+        result = await discoverer.discover(icp=_make_icp())
+
+        assert len(result) == 1
+        assert result[0].data_quality == "partial"
+
+    async def test_enrich_exception_in_enrich_domains_skips_domain(self, discoverer, mock_hunter):
+        """enrich_domains has no partial profile to fall back to — failed domains excluded."""
+        mock_hunter.enrich_company.side_effect = [
+            _full_profile("good.com"),
+            RuntimeError("connection refused"),
+        ]
+
+        result = await discoverer.enrich_domains(["good.com", "bad.com"])
+
+        assert len(result) == 1
+        assert result[0].domain == "good.com"
+
+    async def test_all_enrich_failures_in_discover_returns_all_partials(self, discoverer, mock_hunter):
+        mock_hunter.discover_companies.return_value = [
+            _partial_profile("a.com"),
+            _partial_profile("b.com"),
+        ]
+        mock_hunter.enrich_company.side_effect = RuntimeError("Hunter down")
+
+        result = await discoverer.discover(icp=_make_icp())
+
+        assert len(result) == 2
+        assert all(c.data_quality == "partial" for c in result)

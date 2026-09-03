@@ -193,9 +193,12 @@ class TestPipelineRun:
         ranked = [_make_ranked("a.com"), _make_ranked("b.com"), _make_ranked("c.com")]
         pipeline = _make_pipeline(ranked=ranked)
 
-        await pipeline.run(company_website="https://acme.com")
+        result = await pipeline.run(company_website="https://acme.com")
 
         assert pipeline.db.save_signal_snapshot.call_count == 3
+        # Verify session_id and rc are passed (not just rc alone)
+        call_args = pipeline.db.save_signal_snapshot.call_args_list[0]
+        assert call_args[0][0] == result.id  # first positional arg is session_id
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +236,65 @@ class TestRankOnlyMode:
 
         call_args = pipeline.company_discoverer.enrich_domains.call_args[0][0]
         assert set(call_args) == {"a.com", "b.com"}
+
+
+# ---------------------------------------------------------------------------
+# list_size slicing
+# ---------------------------------------------------------------------------
+
+def _make_pipeline_passthrough(ranked: list) -> Pipeline:
+    """Pipeline where contact agent echoes back whatever it receives (preserves slice)."""
+    mock_icp_interp = MagicMock()
+    mock_icp_interp.interpret = AsyncMock(return_value=_make_icp())
+    mock_discoverer = MagicMock()
+    mock_discoverer.discover = AsyncMock(return_value=[_make_profile("acme.com")])
+    mock_scorer = MagicMock()
+    mock_scorer.score = MagicMock(return_value=ranked)
+    mock_contact_agent = MagicMock()
+    mock_contact_agent.run = AsyncMock(side_effect=lambda companies: companies)
+    mock_db = MagicMock()
+    mock_db.save_signal_snapshot = MagicMock()
+    return Pipeline(
+        icp_interpreter=mock_icp_interp,
+        company_discoverer=mock_discoverer,
+        scoring_engine=mock_scorer,
+        contact_agent=mock_contact_agent,
+        db=mock_db,
+    )
+
+
+class TestListSizeSlicing:
+    async def test_list_size_limits_ranked_output(self):
+        ranked = [_make_ranked(f"{i}.com") for i in range(10)]
+        pipeline = _make_pipeline_passthrough(ranked)
+
+        result = await pipeline.run(company_website="https://acme.com", list_size=3)
+
+        assert len(result.ranked_companies) == 3
+
+    async def test_list_size_default_20_applied(self):
+        ranked = [_make_ranked(f"{i}.com") for i in range(30)]
+        pipeline = _make_pipeline_passthrough(ranked)
+
+        result = await pipeline.run(company_website="https://acme.com")
+
+        assert len(result.ranked_companies) <= 20
+
+    async def test_list_size_larger_than_results_returns_all(self):
+        ranked = [_make_ranked("a.com"), _make_ranked("b.com")]
+        pipeline = _make_pipeline_passthrough(ranked)
+
+        result = await pipeline.run(company_website="https://acme.com", list_size=50)
+
+        assert len(result.ranked_companies) == 2
+
+    async def test_db_snapshots_only_for_sliced_list(self):
+        ranked = [_make_ranked(f"{i}.com") for i in range(10)]
+        pipeline = _make_pipeline_passthrough(ranked)
+
+        await pipeline.run(company_website="https://acme.com", list_size=4)
+
+        assert pipeline.db.save_signal_snapshot.call_count == 4
 
 
 # ---------------------------------------------------------------------------
@@ -331,3 +393,37 @@ class TestExportToCsv:
             rows = list(csv.DictReader(f))
 
         assert rows == []
+
+    def test_location_includes_city_and_country(self, tmp_path):
+        ranked = _make_ranked("acme.com")
+        ranked.company.hq_location = "New York"
+        ranked.company.hq_country = "US"
+        session = ResearchSession(
+            company_website="https://acme.com",
+            status="completed",
+            ranked_companies=[ranked],
+        )
+        output = str(tmp_path / "out.csv")
+        export_to_csv(session, output)
+
+        with open(output) as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["location"] == "New York, US"
+
+    def test_location_country_only_when_no_city(self, tmp_path):
+        ranked = _make_ranked("acme.com")
+        ranked.company.hq_location = None
+        ranked.company.hq_country = "US"
+        session = ResearchSession(
+            company_website="https://acme.com",
+            status="completed",
+            ranked_companies=[ranked],
+        )
+        output = str(tmp_path / "out.csv")
+        export_to_csv(session, output)
+
+        with open(output) as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["location"] == "US"

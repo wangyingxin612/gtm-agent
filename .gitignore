@@ -1,7 +1,12 @@
 .env
 data/sessions/
 data/cache/
+data/signal_store/
+output/
+notebooks/.ipynb_checkpoints/
 *.pyc
 __pycache__/
+.pytest_cache/
+.hypothesis/
 .DS_Store
 .claude/settings.local.json

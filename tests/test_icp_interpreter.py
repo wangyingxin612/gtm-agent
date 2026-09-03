@@ -276,3 +276,22 @@ class TestRetryBehavior:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(Exception):
                 await interpreter.interpret(target="test", client=mock_client)
+
+    async def test_retries_on_connection_error(self, interpreter):
+        """APIConnectionError (subclass of APIError) should also trigger retry."""
+        import anthropic
+
+        mock_client = MagicMock()
+        conn_err = anthropic.APIConnectionError(request=MagicMock())
+        mock_client.messages.create = AsyncMock(
+            side_effect=[
+                conn_err,
+                _mock_anthropic_response(_make_llm_json()),
+            ]
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await interpreter.interpret(target="test", client=mock_client)
+
+        assert isinstance(result, ICPDefinition)
+        assert mock_client.messages.create.call_count == 2

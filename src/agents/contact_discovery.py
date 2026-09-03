@@ -85,4 +85,7 @@ class ContactDiscoveryAgent:
 
         ranked = sorted(contacts, key=_contact_sort_key)
         rc.contacts = ranked[: self._max_contacts]
+        if rc.contacts:
+            all_verified = all(c.email_confidence == "verified" for c in rc.contacts)
+            rc.contact_confidence = "high" if all_verified else "low"
         return rc

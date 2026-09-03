@@ -357,55 +357,34 @@ class TestLookalikeSimilarity:
 # ---------------------------------------------------------------------------
 
 class TestCalculateTotalScore:
-    def test_cold_start_uses_cold_weights_and_floor(self, icp):
-        # With 0 customers → cold start formula
-        company = _make_company(
-            industry="Financial Services",
-            employee_count=320,
-            hq_country="US",
-        )
-        score_no_customers = calculate_total_score(company, icp, [])
-        score_with_customers = calculate_total_score(
-            company, icp,
+    def test_cold_start_uses_cold_weights_and_floor(self):
+        # Cold start (no customers) uses cold_start_weights + floor; differs from normal mode
+        score_cold = calculate_total_score(30.0, 25.0, 13.0, 15.0, 10.0, [])
+        score_normal = calculate_total_score(
+            30.0, 25.0, 13.0, 15.0, 10.0,
             [_make_company(id="c1", domain="c1.com")],
         )
-        # Cold start floor adds 5 bonus points to base; scores will differ
-        assert score_no_customers != score_with_customers
+        assert score_cold != score_normal
 
-    def test_score_hard_capped_at_100(self, icp):
-        # All-max company with 2 matching customers
-        company = _make_company(
-            industry="Financial Services",
-            employee_count=320,
-            hq_country="US",
-            funding_date=date.today() - timedelta(days=30),
-            funding_series="Series A",
-            founded_year=date.today().year - 5,
-            revenue_range="$10M-$50M",
-            description="compliance operations process documentation manual workflows",
-        )
-        customers = [
-            _make_company(id="c1", domain="c1.com", industry="Financial Services", employee_count=300),
-            _make_company(id="c2", domain="c2.com", industry="Financial Services", employee_count=320),
-        ]
-        score = calculate_total_score(company, icp, customers)
+    def test_score_hard_capped_at_100(self, existing_customers):
+        # Maxed sub-scores should still be capped at 100
+        score = calculate_total_score(30.0, 25.0, 20.0, 15.0, 10.0, existing_customers)
         assert score <= 100.0
 
-    def test_perfect_match_normal_mode_score(self, icp, perfect_match, existing_customers):
+    def test_perfect_match_normal_mode_score(self, existing_customers):
         # s_firm=30, s_kw=25, s_grow=13, s_time=15, s_like=10 → 93.0
-        score = calculate_total_score(perfect_match, icp, existing_customers)
+        score = calculate_total_score(30.0, 25.0, 13.0, 15.0, 10.0, existing_customers)
         assert score == pytest.approx(93.0)
 
-    def test_no_match_scores_low(self, icp, no_match, existing_customers):
-        # Gaming company, no signals → low score
-        score = calculate_total_score(no_match, icp, existing_customers)
+    def test_no_match_scores_low(self, existing_customers):
+        # Zero signals on every dimension → low score
+        score = calculate_total_score(0.0, 0.0, 0.0, 0.0, 0.0, existing_customers)
         assert score < 20.0
 
-    def test_cold_start_company_score(self, icp, cold_start_company):
-        # Insurance, AU, Series A ~10mo ago, 150 emp, some keywords
+    def test_cold_start_company_score(self):
         # s_firm=30, s_kw=10, s_grow=11, s_time=7
         # cold: (30/30*38)+(10/25*30)+(11/20*20)+(7/15*17)+5 = 38+12+11+7.93+5 = 73.93
-        score = calculate_total_score(cold_start_company, icp, [])
+        score = calculate_total_score(30.0, 10.0, 11.0, 7.0, 5.0, [])
         assert score == pytest.approx(73.93, abs=0.1)
 
 
@@ -538,4 +517,4 @@ class TestScoringEngineIntegration:
     def test_cold_start_reasoning_contains_warning(self, icp, cold_start_company):
         engine = ScoringEngine()
         results = engine.score([cold_start_company], icp, [])
-        assert "no existing customers" in results[0].reasoning_summary
+        assert "no existing customers" in results[0].reasoning_summary.lower()

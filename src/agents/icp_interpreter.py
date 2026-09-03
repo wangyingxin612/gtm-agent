@@ -15,7 +15,7 @@ from typing import List, Optional
 
 import anthropic
 
-from src.agents.scoring_engine import load_scoring_config
+from src.config import load_scoring_config
 from src.models.icp import ICPDefinition
 
 _SYSTEM_PROMPT = (
@@ -144,7 +144,7 @@ class ICPInterpreter:
                     messages=[{"role": "user", "content": user_msg}],
                 )
                 return response.content[0].text
-            except anthropic.APIStatusError as exc:
+            except anthropic.APIError as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(2 ** attempt)

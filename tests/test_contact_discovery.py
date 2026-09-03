@@ -251,3 +251,49 @@ class TestContactRanking:
         result = await agent.run(companies)
 
         assert len(result[0].contacts) == 3  # DEFAULT_CONFIG max is 3
+
+
+# ---------------------------------------------------------------------------
+# contact_confidence population
+# ---------------------------------------------------------------------------
+
+class TestContactConfidence:
+    async def test_all_verified_sets_high_confidence(self, agent, mock_hunter):
+        contacts = [
+            _make_contact(email="a@x.com", email_confidence="verified"),
+            _make_contact(email="b@x.com", email_confidence="verified"),
+        ]
+        mock_hunter.domain_search.return_value = contacts
+        companies = [_make_ranked("x.com")]
+
+        result = await agent.run(companies)
+
+        assert result[0].contact_confidence == "high"
+
+    async def test_any_likely_sets_low_confidence(self, agent, mock_hunter):
+        contacts = [
+            _make_contact(email="a@x.com", email_confidence="verified"),
+            _make_contact(email="b@x.com", email_confidence="likely"),
+        ]
+        mock_hunter.domain_search.return_value = contacts
+        companies = [_make_ranked("x.com")]
+
+        result = await agent.run(companies)
+
+        assert result[0].contact_confidence == "low"
+
+    async def test_no_contacts_leaves_confidence_none(self, agent, mock_hunter):
+        mock_hunter.domain_search.return_value = []
+        companies = [_make_ranked("x.com")]
+
+        result = await agent.run(companies)
+
+        assert result[0].contact_confidence is None
+
+    async def test_failed_search_leaves_confidence_none(self, agent, mock_hunter):
+        mock_hunter.domain_search.side_effect = RuntimeError("API error")
+        companies = [_make_ranked("x.com")]
+
+        result = await agent.run(companies)
+
+        assert result[0].contact_confidence is None

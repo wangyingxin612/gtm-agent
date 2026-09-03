@@ -8,21 +8,12 @@ Score semantics: higher = higher expected outreach value *right now*.
 Differences < 5 points are not meaningful.
 """
 
-import json
-import os
 from datetime import date
-from functools import lru_cache
 from typing import List, Optional
 
+from src.config import load_scoring_config
 from src.models.company import CompanyProfile, RankedCompany, ScoreBreakdown
 from src.models.icp import ICPDefinition
-
-
-@lru_cache(maxsize=1)
-def load_scoring_config(path: str = "scoring_config.json") -> dict:
-    abs_path = os.path.join(os.path.dirname(__file__), "..", "..", path)
-    with open(abs_path) as f:
-        return json.load(f)
 
 
 def _midpoint(employee_range: Optional[str]) -> float:
@@ -169,51 +160,35 @@ def score_lookalike(
     company: CompanyProfile,
     existing_customers: List[CompanyProfile],
 ) -> float:
-    if len(existing_customers) == 0:
+    if not existing_customers:
         return 5.0
 
-    if len(existing_customers) < 3:
-        same_industry = sum(
-            1 for c in existing_customers if c.industry == company.industry
-        )
-        in_size_range = sum(
-            1 for c in existing_customers
-            if c.employee_count and
-            abs(c.employee_count - (company.employee_count or 0)) < 200
-        )
-        ratio = (same_industry + in_size_range) / (2 * len(existing_customers))
-        return round(10.0 * ratio, 2)
-
-    # 3+ customers: cosine similarity placeholder — use simple overlap until
-    # embedding integration is added in Phase 2.
-    same_industry = sum(
-        1 for c in existing_customers if c.industry == company.industry
-    )
-    in_size_range = sum(
-        1 for c in existing_customers
-        if c.employee_count and
-        abs(c.employee_count - (company.employee_count or 0)) < 200
-    )
+    # Phase 2: replace with embedding-based cosine similarity at >= 80 labeled samples.
+    target_emp = company.employee_count or 0
+    same_industry = 0
+    in_size_range = 0
+    for c in existing_customers:
+        if c.industry == company.industry:
+            same_industry += 1
+        if c.employee_count and abs(c.employee_count - target_emp) < 200:
+            in_size_range += 1
     ratio = (same_industry + in_size_range) / (2 * len(existing_customers))
     return round(10.0 * ratio, 2)
 
 
 def calculate_total_score(
-    company: CompanyProfile,
-    icp: ICPDefinition,
+    s_firm: float,
+    s_kw: float,
+    s_grow: float,
+    s_time: float,
+    s_like: float,
     existing_customers: List[CompanyProfile],
 ) -> float:
     config = load_scoring_config()
     w = config["weights"]
     cw = config["cold_start_weights"]
 
-    s_firm = score_firmographic(company, icp)
-    s_kw = score_keyword_relevance(company, icp)
-    s_grow = score_growth_signals(company)
-    s_time = score_timing(company, icp)
-    s_like = score_lookalike(company, existing_customers)
-
-    if len(existing_customers) == 0:
+    if not existing_customers:
         total = (
             (s_firm / 30 * cw["firmographic"]) +
             (s_kw / 25 * cw["keyword_relevance"]) +
@@ -253,6 +228,54 @@ def apply_deal_modifier(
     return min(100.0, max(0.0, score + adjustment))
 
 
+def _build_reasoning_summary(
+    company: CompanyProfile,
+    icp: ICPDefinition,
+    s_firm: float,
+    s_kw: float,
+    s_grow: float,
+    s_time: float,
+    is_cold_start: bool,
+) -> str:
+    """Human-readable explanation of why this company scored the way it did."""
+    parts = []
+
+    if is_cold_start:
+        parts.append("no existing customers to validate against")
+
+    # Firmographic (max 30)
+    if s_firm >= 24:
+        parts.append("strong firmographic fit")
+    elif s_firm >= 15:
+        parts.append("partial firmographic fit")
+
+    # Keywords (max 25)
+    if s_kw >= 20:
+        parts.append("high keyword match")
+    elif s_kw >= 10:
+        parts.append("partial keyword match")
+
+    # Growth / funding
+    if company.funding_date:
+        months_ago = (date.today() - company.funding_date).days / 30
+        round_label = company.funding_series or "undisclosed round"
+        if months_ago <= 6:
+            parts.append(f"funded {int(months_ago)}mo ago ({round_label})")
+        elif months_ago <= 12:
+            parts.append(f"{round_label} ~{int(months_ago)}mo ago")
+    elif company.funding_series:
+        parts.append(f"stage: {company.funding_series}")
+
+    # Timing (max 15)
+    if s_time >= 10:
+        parts.append("strong timing signals")
+
+    if not parts:
+        return ""
+    summary = "; ".join(parts)
+    return summary[0].upper() + summary[1:]
+
+
 def assign_tier(score: float) -> str:
     config = load_scoring_config()
     t = config["tiers"]
@@ -268,9 +291,6 @@ def assign_tier(score: float) -> str:
 class ScoringEngine:
     """Scores a list of CompanyProfiles against an ICP and existing customers."""
 
-    def __init__(self, config_path: str = "scoring_config.json"):
-        self._config_path = config_path
-
     def score(
         self,
         companies: List[CompanyProfile],
@@ -279,10 +299,6 @@ class ScoringEngine:
     ) -> List[RankedCompany]:
         is_cold_start = len(existing_customers) == 0
         scoring_basis = "cold_start" if is_cold_start else "full"
-        cold_start_note = (
-            "⚠ Score based on firmographic fit only — no existing customers to validate against."
-            if is_cold_start else ""
-        )
 
         results = []
         for company in companies:
@@ -292,9 +308,12 @@ class ScoringEngine:
             s_time = score_timing(company, icp)
             s_like = score_lookalike(company, existing_customers)
 
-            raw = calculate_total_score(company, icp, existing_customers)
+            raw = calculate_total_score(s_firm, s_kw, s_grow, s_time, s_like, existing_customers)
             modified = apply_deal_modifier(raw, company, icp)
             tier = assign_tier(modified)
+            summary = _build_reasoning_summary(
+                company, icp, s_firm, s_kw, s_grow, s_time, is_cold_start
+            )
 
             results.append(
                 RankedCompany(
@@ -309,7 +328,7 @@ class ScoringEngine:
                         lookalike_score=s_like,
                     ),
                     scoring_basis=scoring_basis,
-                    reasoning_summary=cold_start_note,
+                    reasoning_summary=summary,
                 )
             )
         return results

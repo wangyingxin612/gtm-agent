@@ -2,6 +2,7 @@
 TDD tests for src/data_providers/hunter_client.py.
 All HTTP calls are mocked — no real API calls ever made.
 """
+import asyncio
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -291,6 +292,38 @@ class TestRetryBehavior:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(Exception, match="[Rr]ate limit|429"):
                 await hunter.discover_companies(_make_icp(), client=mock_client)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency limiting
+# ---------------------------------------------------------------------------
+
+class TestConcurrencyLimit:
+    async def test_in_flight_requests_capped_at_max_concurrency(self):
+        hunter = HunterClient(api_key="test-api-key", max_concurrency=3)
+        in_flight = 0
+        peak = 0
+
+        async def slow_get(url, params=None):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return _mock_response(404, {})
+
+        mock_client = MagicMock()
+        mock_client.get = slow_get
+
+        await asyncio.gather(
+            *[hunter.enrich_company(f"{i}.com", client=mock_client) for i in range(10)]
+        )
+
+        assert peak == 3
+
+    def test_rejects_non_positive_max_concurrency(self):
+        with pytest.raises(ValueError, match="max_concurrency"):
+            HunterClient(api_key="test-api-key", max_concurrency=0)
 
 
 # ---------------------------------------------------------------------------

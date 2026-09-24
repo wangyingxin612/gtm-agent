@@ -10,11 +10,15 @@ Endpoints used (verified against real API 2026-04):
 
 All methods accept an optional `client: httpx.AsyncClient` for testability.
 If not supplied, a fresh client is created and closed within the method.
+
+Concurrency: agents fan out with asyncio.gather, so every request acquires a
+per-client semaphore. Retry-with-backoff recovers from 429s; the semaphore
+keeps us from causing them in the first place.
 """
 
 import asyncio
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
 import httpx
@@ -46,6 +50,7 @@ BUCKET_MIDPOINTS: Dict[str, int] = {
 }
 
 MIN_CONTACT_CONFIDENCE = 70
+DEFAULT_MAX_CONCURRENCY = 10
 
 
 def _map_size_to_buckets(size_min: int, size_max: int) -> List[str]:
@@ -64,10 +69,13 @@ def _domain_id(domain: str) -> str:
 class HunterClient:
     """Async client for Hunter.io API. Inject api_key at construction time."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, max_concurrency: int = DEFAULT_MAX_CONCURRENCY):
         if not api_key:
             raise ValueError("api_key is required and must be non-empty")
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
         self.api_key = api_key
+        self._semaphore = asyncio.Semaphore(max_concurrency)
 
     # ------------------------------------------------------------------
     # Public API
@@ -162,7 +170,8 @@ class HunterClient:
         max_retries: int = 3,
     ) -> httpx.Response:
         for attempt in range(max_retries + 1):
-            response = await client.get(url, params=params)
+            async with self._semaphore:
+                response = await client.get(url, params=params)
             if response.status_code != 429:
                 return response
             if attempt < max_retries:
@@ -179,9 +188,10 @@ class HunterClient:
         max_retries: int = 3,
     ) -> httpx.Response:
         for attempt in range(max_retries + 1):
-            response = await client.post(
-                url, params={"api_key": self.api_key}, json=body
-            )
+            async with self._semaphore:
+                response = await client.post(
+                    url, params={"api_key": self.api_key}, json=body
+                )
             if response.status_code != 429:
                 return response
             if attempt < max_retries:
@@ -229,7 +239,7 @@ class HunterClient:
         bucket = data.get("headcount")
         emp_count = BUCKET_MIDPOINTS.get(bucket) if bucket else None
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return CompanyProfile(
             id=_domain_id(domain),
             name=name,
@@ -314,7 +324,7 @@ class HunterClient:
             or data.get("linkedin_handle")
         )
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return CompanyProfile(
             id=_domain_id(domain),
             name=data.get("name", domain),

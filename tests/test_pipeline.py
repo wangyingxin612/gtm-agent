@@ -5,7 +5,7 @@ All agents and external I/O are mocked — no real API calls ever made.
 import csv
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +15,9 @@ from src.models.company import CompanyProfile, RankedCompany, ScoreBreakdown
 from src.models.contact import Contact
 from src.models.icp import ICPDefinition
 from src.models.session import ResearchSession
+from src.agents.scoring_engine import ScoringEngine
 from src.pipeline import Pipeline, export_to_csv
+from src.storage.database import SignalStore, get_connection, init_db
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +44,7 @@ def _make_profile(domain: str) -> CompanyProfile:
         employee_range="201-500",
         hq_country="US",
         data_source="hunter",
-        last_enriched=datetime.utcnow(),
+        last_enriched=datetime.now(timezone.utc),
         enrichment_confidence=0.9,
     )
 
@@ -236,6 +238,74 @@ class TestRankOnlyMode:
 
         call_args = pipeline.company_discoverer.enrich_domains.call_args[0][0]
         assert set(call_args) == {"a.com", "b.com"}
+
+
+# ---------------------------------------------------------------------------
+# existing_customers → ScoringEngine wiring (integration: real scorer + DB)
+# ---------------------------------------------------------------------------
+
+def _make_integration_pipeline(customer_profiles: List[CompanyProfile]) -> Pipeline:
+    """Real ScoringEngine and in-memory SignalStore; only external-facing agents mocked."""
+    mock_icp_interp = MagicMock()
+    mock_icp_interp.interpret = AsyncMock(return_value=_make_icp())
+    mock_discoverer = MagicMock()
+    mock_discoverer.discover = AsyncMock(return_value=[_make_profile("acme.com")])
+    mock_discoverer.enrich_domains = AsyncMock(return_value=customer_profiles)
+    mock_contact_agent = MagicMock()
+    mock_contact_agent.run = AsyncMock(side_effect=lambda companies: companies)
+    conn = get_connection(":memory:")
+    init_db(conn)
+    return Pipeline(
+        icp_interpreter=mock_icp_interp,
+        company_discoverer=mock_discoverer,
+        scoring_engine=ScoringEngine(),
+        contact_agent=mock_contact_agent,
+        db=SignalStore(conn),
+    )
+
+
+class TestExistingCustomersWiring:
+    async def test_existing_customers_produce_full_scoring_basis(self):
+        pipeline = _make_integration_pipeline([_make_profile("customer.com")])
+
+        result = await pipeline.run(
+            company_website="https://acme.com",
+            existing_customers=[{"domain": "customer.com", "name": "Customer"}],
+        )
+
+        assert result.ranked_companies
+        assert all(rc.scoring_basis == "full" for rc in result.ranked_companies)
+
+    async def test_existing_customer_domains_are_enriched(self):
+        pipeline = _make_integration_pipeline([_make_profile("customer.com")])
+
+        await pipeline.run(
+            company_website="https://acme.com",
+            existing_customers=[{"domain": "customer.com"}, {"name": "no domain"}],
+        )
+
+        pipeline.company_discoverer.enrich_domains.assert_called_once_with(["customer.com"])
+
+    async def test_no_existing_customers_is_cold_start(self):
+        pipeline = _make_integration_pipeline([])
+
+        result = await pipeline.run(company_website="https://acme.com")
+
+        pipeline.company_discoverer.enrich_domains.assert_not_called()
+        assert all(rc.scoring_basis == "cold_start" for rc in result.ranked_companies)
+
+    async def test_scoring_basis_persisted_to_signal_snapshot(self):
+        pipeline = _make_integration_pipeline([_make_profile("customer.com")])
+
+        await pipeline.run(
+            company_website="https://acme.com",
+            existing_customers=[{"domain": "customer.com"}],
+        )
+
+        rows = pipeline.db.conn.execute(
+            "SELECT scoring_basis FROM signal_snapshots"
+        ).fetchall()
+        assert [r["scoring_basis"] for r in rows] == ["full"]
 
 
 # ---------------------------------------------------------------------------

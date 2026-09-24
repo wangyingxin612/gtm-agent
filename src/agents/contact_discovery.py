@@ -10,7 +10,10 @@ Ranking priority:
 """
 
 import asyncio
+import logging
 from typing import List
+
+import httpx
 
 from src.data_providers.hunter_client import HunterClient
 from src.models.company import RankedCompany
@@ -30,6 +33,8 @@ _CONFIDENCE_RANK = {
 }
 
 _SEARCH_TIERS = {"Tier 1", "Tier 2"}
+
+logger = logging.getLogger(__name__)
 
 
 def _contact_sort_key(c: Contact):
@@ -79,7 +84,14 @@ class ContactDiscoveryAgent:
             contacts: List[Contact] = await self.hunter_client.domain_search(
                 rc.company.domain, self.config
             )
+        except (httpx.HTTPError, RuntimeError) as exc:
+            # Expected: network/HTTP errors, 429 retries exhausted
+            logger.warning("contact search failed for %s: %s", rc.company.domain, exc)
+            rc.contacts = []
+            return rc
         except Exception:
+            # Unexpected (likely a bug) — log loudly, but never drop the company
+            logger.exception("unexpected error in contact search for %s", rc.company.domain)
             rc.contacts = []
             return rc
 

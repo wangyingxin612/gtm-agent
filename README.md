@@ -1,5 +1,8 @@
 # GTM Agent
 
+[![tests](https://github.com/wangyingxin612/gtm-agent/actions/workflows/test.yml/badge.svg)](https://github.com/wangyingxin612/gtm-agent/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Backend Python pipeline for B2B lead research.
 
 **Input:** Company website + natural-language ICP description  
@@ -10,8 +13,9 @@ Backend Python pipeline for B2B lead research.
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Install (Python 3.11+)
 pip install -r requirements.txt
+pip install -e .
 
 # 2. Set API keys
 cp .env.example .env
@@ -31,6 +35,17 @@ jupyter notebook notebooks/gtm_pipeline.ipynb
 | `HUNTER_API_KEY` | [hunter.io](https://hunter.io) — Free plan sufficient to start |
 | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) |
 | `FIRECRAWL_API_KEY` | [firecrawl.dev](https://firecrawl.dev) — Optional for MVP |
+
+## What You Get
+
+Tell it who you sell to; it returns a ranked, explained list of companies to reach out to now, with the right people at each.
+One row of the CSV output (illustrative, fictional company):
+
+| company_name | tier | score | why_now | contact_1_title |
+|---|---|---|---|---|
+| Northwind Mutual | Tier 1 | 78.5 | Strong firmographic fit; high keyword match; funded 4mo ago (Series B) | VP of Operations |
+
+Scores are prioritization heuristics, not conversion predictions — differences under 5 points aren't meaningful.
 
 ## Architecture
 
@@ -72,6 +87,11 @@ export_to_csv(session, "output/results.csv")
 | Phase 2 | ≥ 80 labeled samples | `python scripts/train_scoring_model.py` → review → `python scripts/apply_weights.py` |
 
 Label outcomes by updating `user_outcome` in `signal_snapshots` after outreach.
+Each snapshot records its `scoring_basis` (`full` vs `cold_start`) so training can segment by it.
+
+`load_scoring_config()` is cached per process. After `apply_weights.py` rewrites
+`scoring_config.json`, restart any running notebook kernel (or call
+`load_scoring_config.cache_clear()`) to pick up the new weights.
 
 ## Project Layout
 
@@ -97,5 +117,5 @@ scoring_config.json   All weights and thresholds (never hardcode in Python)
 ## Tests
 
 ```bash
-pytest tests/          # ~227 tests, all agents mocked — no real API calls
+pytest tests/          # all external APIs (Hunter, Claude) mocked — no real calls
 ```

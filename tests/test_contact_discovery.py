@@ -2,8 +2,9 @@
 TDD tests for src/agents/contact_discovery.py.
 All HunterClient calls are mocked — no real API calls ever made.
 """
+import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,7 +33,7 @@ def _make_profile(domain: str) -> CompanyProfile:
         name=domain,
         domain=domain,
         data_source="hunter",
-        last_enriched=datetime.utcnow(),
+        last_enriched=datetime.now(timezone.utc),
         enrichment_confidence=0.9,
     )
 
@@ -180,6 +181,30 @@ class TestOutputShape:
 # ---------------------------------------------------------------------------
 
 class TestFailureIsolation:
+    async def test_known_failure_logs_warning_with_domain(self, agent, mock_hunter, caplog):
+        mock_hunter.domain_search.side_effect = RuntimeError("rate limit exceeded")
+
+        with caplog.at_level(logging.WARNING, logger="src.agents.contact_discovery"):
+            await agent.run([_make_ranked("acme.com")])
+
+        assert any(
+            r.levelno == logging.WARNING and "acme.com" in r.getMessage()
+            and "rate limit exceeded" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_unexpected_failure_logs_traceback_but_keeps_company(
+        self, agent, mock_hunter, caplog
+    ):
+        mock_hunter.domain_search.side_effect = KeyError("emails")
+
+        with caplog.at_level(logging.WARNING, logger="src.agents.contact_discovery"):
+            result = await agent.run([_make_ranked("acme.com")])
+
+        assert len(result) == 1 and result[0].contacts == []
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors and errors[0].exc_info is not None
+
     async def test_domain_search_exception_does_not_drop_company(self, agent, mock_hunter):
         mock_hunter.domain_search.side_effect = Exception("Hunter API down")
         companies = [_make_ranked("acme.com")]

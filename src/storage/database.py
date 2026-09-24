@@ -16,7 +16,7 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from src.models.events import OverrideEvent
@@ -51,6 +51,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             lookalike_score REAL,
             total_score REAL NOT NULL,
             tier_assigned TEXT NOT NULL,
+            scoring_basis TEXT,
             user_outcome TEXT,
             outcome_reason TEXT,
             outcome_timestamp TEXT,
@@ -58,6 +59,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             UNIQUE(session_id, company_id)
         )
     """)
+    _migrate_signal_snapshots(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_snapshot_session ON signal_snapshots(session_id)"
     )
@@ -94,6 +96,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_signal_snapshots(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the initial schema to pre-existing DB files."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_snapshots)")}
+    if "scoring_basis" not in columns:
+        conn.execute("ALTER TABLE signal_snapshots ADD COLUMN scoring_basis TEXT")
+        # Before scoring_basis was persisted, the pipeline never passed existing
+        # customers to the scorer, so every historical row was scored cold-start.
+        conn.execute("UPDATE signal_snapshots SET scoring_basis = 'cold_start'")
+
+
 def write_signal_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> None:
     conn.execute(
         """
@@ -101,10 +113,10 @@ def write_signal_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) ->
             id, session_id, company_id, company_domain, icp_hash,
             signals,
             firmographic_score, keyword_score, growth_score, timing_score, lookalike_score,
-            total_score, tier_assigned,
+            total_score, tier_assigned, scoring_basis,
             user_outcome, outcome_reason, outcome_timestamp,
             scored_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
         """,
         (
             snapshot["id"],
@@ -120,6 +132,7 @@ def write_signal_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) ->
             snapshot.get("lookalike_score"),
             snapshot["total_score"],
             snapshot["tier_assigned"],
+            snapshot.get("scoring_basis"),
             _iso(snapshot["scored_at"]),
         ),
     )
@@ -180,7 +193,8 @@ class SignalStore:
             "lookalike_score": bd.lookalike_score,
             "total_score": rc.total_score,
             "tier_assigned": rc.tier,
-            "scored_at": datetime.utcnow(),
+            "scoring_basis": rc.scoring_basis,
+            "scored_at": datetime.now(timezone.utc),
         }
         with self.conn:
             write_signal_snapshot(self.conn, snapshot)

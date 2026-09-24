@@ -381,3 +381,35 @@ class TestInMemoryDb:
         conn = get_connection(":memory:")
         assert conn.row_factory == sqlite3.Row
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Schema migration — DB files created before scoring_basis existed
+# ---------------------------------------------------------------------------
+
+class TestScoringBasisMigration:
+    def test_init_db_adds_and_backfills_scoring_basis(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE signal_snapshots (
+                id TEXT PRIMARY KEY, session_id TEXT NOT NULL, company_id TEXT NOT NULL,
+                company_domain TEXT NOT NULL, icp_hash TEXT NOT NULL, signals TEXT NOT NULL,
+                firmographic_score REAL, keyword_score REAL, growth_score REAL,
+                timing_score REAL, lookalike_score REAL, total_score REAL NOT NULL,
+                tier_assigned TEXT NOT NULL, user_outcome TEXT, outcome_reason TEXT,
+                outcome_timestamp TEXT, scored_at TEXT NOT NULL,
+                UNIQUE(session_id, company_id)
+            )
+        """)
+        conn.execute(
+            "INSERT INTO signal_snapshots (id, session_id, company_id, company_domain, "
+            "icp_hash, signals, total_score, tier_assigned, scored_at) "
+            "VALUES ('old', 's', 'c', 'x.com', 'h', '{}', 50, 'Tier 2', '2026-05-01')"
+        )
+
+        init_db(conn)
+        init_db(conn)  # idempotent
+
+        row = conn.execute("SELECT scoring_basis FROM signal_snapshots").fetchone()
+        assert row["scoring_basis"] == "cold_start"

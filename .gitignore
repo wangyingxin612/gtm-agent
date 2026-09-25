@@ -10,3 +10,5 @@ __pycache__/
 .hypothesis/
 .DS_Store
 .claude/settings.local.json
+*.egg-info/
+.vscode/

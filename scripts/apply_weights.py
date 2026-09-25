@@ -17,10 +17,13 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.config import load_scoring_config  # noqa: E402
 CONFIG_PATH = ROOT / "scoring_config.json"
 HISTORY_DIR = ROOT / "scoring_config_history"
 
@@ -84,10 +87,14 @@ def apply(candidate_path: Path, dry_run: bool) -> None:
     parts = str(old_version).split(".")
     parts[-1] = str(int(parts[-1]) + 1)
     candidate_clean["version"] = ".".join(parts)
-    candidate_clean["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    candidate_clean["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     with open(CONFIG_PATH, "w") as f:
         json.dump(candidate_clean, f, indent=2)
+
+    # load_scoring_config() is lru_cached; drop the stale copy if this runs
+    # in-process (e.g. from a notebook). Other running processes must restart.
+    load_scoring_config.cache_clear()
 
     print(f"scoring_config.json updated → version {candidate_clean['version']}")
     print("\nDone. Run `pytest tests/` to confirm nothing broke.")

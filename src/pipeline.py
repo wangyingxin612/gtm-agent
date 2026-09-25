@@ -15,7 +15,7 @@ Flow:
 
 import csv
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.agents.company_discoverer import CompanyDiscoverer
@@ -24,6 +24,7 @@ from src.agents.icp_interpreter import ICPInterpreter
 from src.agents.scoring_engine import ScoringEngine
 from src.config import load_scoring_config
 from src.data_providers.hunter_client import HunterClient
+from src.models.company import CompanyProfile
 from src.models.session import ResearchSession
 
 _CSV_COLUMNS = [
@@ -91,7 +92,7 @@ class Pipeline:
 
         # Step 3 — Score and rank
         session.status = "ranking"
-        customer_profiles = []  # Phase 2: populate from existing_customers
+        customer_profiles = await self._enrich_customers(existing_customers)
         ranked = self.scoring_engine.score(candidates, icp, customer_profiles)
         ranked = ranked[:list_size]
         session.ranked_companies = ranked
@@ -107,8 +108,21 @@ class Pipeline:
         session.ranked_companies = ranked_with_contacts
 
         session.status = "completed"
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         return session
+
+    async def _enrich_customers(
+        self, existing_customers: Optional[List[Dict[str, Any]]]
+    ) -> List[CompanyProfile]:
+        """Enrich customer domains so lookalike scoring has industry/size to compare.
+
+        Customers that fail to enrich are dropped; if none survive, scoring falls
+        back to cold-start, which is the honest basis when there is nothing to compare.
+        """
+        domains = [c["domain"] for c in (existing_customers or []) if c.get("domain")]
+        if not domains:
+            return []
+        return await self.company_discoverer.enrich_domains(domains)
 
 
 def export_to_csv(session: ResearchSession, output_path: str) -> str:
@@ -153,7 +167,6 @@ async def run_pipeline(
     lead_list: Optional[List[Dict[str, Any]]] = None,
     competitors: Optional[List[str]] = None,
     list_size: int = 20,
-    deep_enrich: bool = False,
     anthropic_api_key: Optional[str] = None,
     hunter_api_key: Optional[str] = None,
 ) -> ResearchSession:

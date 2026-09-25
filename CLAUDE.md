@@ -54,35 +54,36 @@ gtm-agent/
 │   │   ├── icp.py                    # ICPDefinition, all ICP-related models
 │   │   ├── company.py                # CompanyProfile (canonical context), RankedCompany
 │   │   ├── contact.py                # Contact model
-│   │   └── events.py                 # SignalSnapshot, OverrideEvent, SignalEvent
+│   │   ├── events.py                 # SignalSnapshot, OverrideEvent, SignalEvent
+│   │   └── session.py                # ResearchSession
 │   ├── data_providers/
-│   │   ├── hunter_client.py          # All Hunter.io API calls
-│   │   └── firecrawl_client.py       # Firecrawl scraping
+│   │   └── hunter_client.py          # All Hunter.io API calls (retry + concurrency cap)
+│   │                                 # firecrawl_client.py — post-MVP, not yet implemented
 │   ├── storage/
 │   │   └── database.py               # SQLite: signal_snapshots, override_events tables
+│   ├── config.py                     # load_scoring_config() (lru_cached)
 │   └── pipeline.py                   # run_pipeline() — main entry point
 ├── data/
 │   ├── sessions/                     # Session JSON files (gitignored)
 │   ├── cache/                        # API response cache (gitignored)
 │   └── signal_store/                 # SQLite DB lives here (gitignored)
 ├── notebooks/
+│   ├── gtm_pipeline.ipynb            # Operator interface: run pipeline, review, export
 │   └── weekly_signal_analysis.ipynb  # Phase 1 manual learning analysis
 ├── scripts/
 │   ├── train_scoring_model.py        # Phase 2: triggers at 80 labeled samples
 │   └── apply_weights.py              # Human-approved weight update
-├── tests/
-│   ├── test_scoring_engine.py
-│   ├── test_icp_interpreter.py
-│   ├── test_company_discoverer.py
-│   └── test_contact_discovery.py
+├── tests/                            # One test_*.py per module; all external APIs mocked
 ├── docs/
 │   ├── Tech_Spec_v3.1.md
 │   └── PRD_v2.md
+├── .github/workflows/test.yml        # CI: pytest on Python 3.11 + 3.12
 ├── scoring_config.json               # All weights, tiers, modifiers — never hardcode
-├── scoring_config_history/           # Versioned backups after each weight update
+├── scoring_config_history/           # Versioned backups (created on first weight update)
 ├── CLAUDE.md                         # This file
 ├── .env                              # Real API keys — NEVER commit
 ├── .env.example                      # Template — safe to commit
+├── pyproject.toml                    # pip install -e .
 └── requirements.txt
 ```
 
@@ -144,6 +145,10 @@ See docs/Tech_Spec_v3.1.md Section 8.0 and Appendix F.
 - SQLite tests use in-memory DB: `sqlite3.connect(":memory:")`
 - Test cold-start separately from normal scoring (0 customers vs 3+ customers)
 - Run `pytest tests/` before every commit
+- Every value passed between agents in `pipeline.py` needs a pipeline-level test,
+  not just a unit test on the receiving agent (unit tests alone missed that
+  `existing_customers` never reached the scorer)
+- CI runs on every push/PR (Python 3.11 + 3.12); DeprecationWarnings fail the build
 
 ---
 
@@ -202,14 +207,3 @@ SELECT COUNT(*) FROM signal_snapshots WHERE user_outcome IS NOT NULL
 5. agents/          — Wire up each agent class
 6. pipeline.py      — Orchestrate end-to-end
 7. notebooks/       — Jupyter interface for operator use
-
----
-
-## Skill Activation (addyosmani/agent-skills)
-
-- Starting a new module    → /spec first, then /plan
-- Implementing logic       → incremental-implementation + test-driven-development
-- Designing class APIs     → api-and-interface-design
-- Debugging Hunter/LLM     → debugging-and-error-recovery
-- Before any commit        → code-review-and-quality + security-and-hardening
-- Shipping a milestone     → /ship

@@ -2,7 +2,7 @@
 TDD tests for src/agents/company_discoverer.py.
 All HunterClient calls are mocked — no real API calls ever made.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,7 +29,7 @@ def _make_icp(**kwargs) -> ICPDefinition:
 
 def _partial_profile(domain: str, name: str = None) -> CompanyProfile:
     """Simulate what HunterClient.discover_companies() returns (sparse)."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     return CompanyProfile(
         id=f"id-{domain}",
         name=name or domain,
@@ -52,7 +52,7 @@ def _partial_profile(domain: str, name: str = None) -> CompanyProfile:
 
 def _full_profile(domain: str) -> CompanyProfile:
     """Simulate what HunterClient.enrich_company() returns (full)."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     return CompanyProfile(
         id=f"id-{domain}",
         name=f"{domain} Corp",
